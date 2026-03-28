@@ -1,0 +1,201 @@
+# syntax=ghcr.io/dayjaby/daeg:latest
+#
+# Embedded Linux Gateway example — kernel + rootfs assembled from independent concerns.
+#
+# Graph:
+#
+#   ubuntu:24.04 (build-base)
+#       ↓
+#   kernel-src  (downloaded kernel source)
+#   ├── config-net        writes /kernel/config.d/10-net.config
+#   ├── config-security   writes /kernel/config.d/20-security.config
+#   ├── config-drivers    writes /kernel/config.d/30-drivers.config
+#   └── config-i2c        writes /kernel/config.d/35-i2c.config  (optional)
+#               ↓
+#       MERGE → kernel-configured
+#       RESOLVE WITH script merge_config.sh  (merges config fragments)
+#       RESOLVE WITH script make olddefconfig (fills in remaining defaults)
+#               ↓
+#       kernel-build   (make bzImage + modules)
+#               ↓
+#       kernel-installed  (modules_install + cp bzImage → /boot)
+#               ↓
+#       MERGE(kernel-installed) → kernel-image    ← deployable component image
+#       RESOLVE WITH rebase rootfs                  (strips build tooling)
+#               ↓
+#   rootfs (base, ubuntu:24.04 + ca-certs)
+#   rootfs-apt
+#   ├── rootfs-net        iproute2, iptables, nftables
+#   ├── rootfs-security   openssh, libpam
+#   ├── rootfs-init       s6-overlay from official image
+#   └── rootfs-ota        SWUpdate from source
+#               ↓
+#       MERGE → rootfs-assembled                  ← deployable component image
+#       RESOLVE WITH rebase rootfs
+#       RESOLVE WITH script ldconfig
+#       RESOLVE WITH script update-ca-certificates
+#               ↓
+#       MERGE(rootfs-assembled, kernel-image) → final
+#       RESOLVE WITH rebase rootfs
+#       RESOLVE WITH script depmod -a
+#
+# OTA component images (each = rootfs base layer + one component layer):
+#
+#   docker buildx build --target kernel-image    -t registry/gw-kernel:v1   .
+#   docker buildx build --target rootfs-assembled -t registry/gw-rootfs:v1  .
+#
+# Enable I2C (OTA kernel update — rootfs unchanged):
+#
+#   docker buildx build --target kernel-image -t registry/gw-kernel:v2 \
+#     --build-arg KERNEL_CONFIGS="config-net, config-security, config-drivers, config-i2c" .
+
+ARG KERNEL_VERSION=6.6.30
+ARG KERNEL_CONFIGS=config-net, config-security, config-drivers
+
+# ── kernel source ──────────────────────────────────────────────────────────────
+FROM ubuntu:24.04 AS build-base
+RUN apt-get update && apt-get install -y \
+      bc bison flex gcc make libssl-dev libelf-dev \
+      wget xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM build-base AS kernel-src
+ARG KERNEL_VERSION
+RUN wget -q https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KERNEL_VERSION}.tar.xz \
+    && tar -xf linux-${KERNEL_VERSION}.tar.xz \
+    && mv linux-${KERNEL_VERSION} /kernel \
+    && rm linux-${KERNEL_VERSION}.tar.xz
+WORKDIR /kernel
+RUN make defconfig
+
+# ── kernel config fragments ────────────────────────────────────────────────────
+# Each branch writes a single fragment to a unique path under /kernel/config.d/.
+# Unique paths mean no RESOLVE directives are needed at the merge — BuildKit
+# verifies the absence of conflicts at build time.
+# Adding a new feature group = one new stage + one entry in KERNEL_CONFIGS.
+# Removing one = drop it from the build-arg. No other changes required.
+
+FROM kernel-src AS config-net
+RUN mkdir -p /kernel/config.d && cat > /kernel/config.d/10-net.config <<'EOF'
+CONFIG_PACKET=y
+CONFIG_NETFILTER=y
+CONFIG_NF_TABLES=y
+CONFIG_IP_NF_IPTABLES=y
+CONFIG_IP_NF_FILTER=y
+CONFIG_IP_NF_NAT=y
+CONFIG_VETH=y
+CONFIG_BRIDGE=y
+CONFIG_BRIDGE_NETFILTER=y
+CONFIG_VLAN_8021Q=y
+EOF
+
+FROM kernel-src AS config-security
+RUN mkdir -p /kernel/config.d && cat > /kernel/config.d/20-security.config <<'EOF'
+CONFIG_SECURITY=y
+CONFIG_SECURITY_NETWORK=y
+CONFIG_SECCOMP=y
+CONFIG_SECCOMP_FILTER=y
+CONFIG_KEYS=y
+CONFIG_ENCRYPTED_KEYS=y
+CONFIG_CRYPTO_AES=y
+CONFIG_CRYPTO_SHA256=y
+CONFIG_CRYPTO_CHACHA20POLY1305=y
+CONFIG_CRYPTO_USER_API_HASH=y
+EOF
+
+FROM kernel-src AS config-drivers
+RUN mkdir -p /kernel/config.d && cat > /kernel/config.d/30-drivers.config <<'EOF'
+CONFIG_USB_SUPPORT=y
+CONFIG_USB_SERIAL=y
+CONFIG_USB_SERIAL_FTDI_SIO=y
+CONFIG_SPI=y
+CONFIG_WATCHDOG=y
+CONFIG_SOFT_WATCHDOG=y
+CONFIG_GPIO_SYSFS=y
+EOF
+
+# Optional I2C support — not included in KERNEL_CONFIGS by default.
+# Add to KERNEL_CONFIGS to enable; omit to disable (OTA kernel update demo).
+FROM kernel-src AS config-i2c
+RUN mkdir -p /kernel/config.d && cat > /kernel/config.d/35-i2c.config <<'EOF'
+CONFIG_I2C=y
+CONFIG_I2C_CHARDEV=y
+CONFIG_I2C_MUX=y
+EOF
+
+# ── merge config fragments ─────────────────────────────────────────────────────
+# Each fragment branch wrote to a unique path — no conflicts.
+# merge_config.sh processes them in filename order (10-, 20-, 30-) and produces
+# a single .config. olddefconfig fills in any options not covered by fragments.
+FROM MERGE(${KERNEL_CONFIGS})
+RESOLVE WITH script bash -c "cd /kernel && scripts/kconfig/merge_config.sh -m .config config.d/*.config"
+RESOLVE WITH script make -C /kernel olddefconfig
+AS kernel-configured
+
+# ── kernel build ───────────────────────────────────────────────────────────────
+FROM kernel-configured AS kernel-build
+RUN make -C /kernel -j$(nproc) bzImage modules
+
+# Install to clean paths — direct parent is kernel-build, so the rebase diff
+# below captures only /boot/bzImage and /rootfs-modules, not the source tree.
+FROM kernel-build AS kernel-installed
+RUN make -C /kernel INSTALL_MOD_PATH=/rootfs-modules modules_install \
+    && mkdir -p /boot \
+    && cp /kernel/arch/x86/boot/bzImage /boot/bzImage
+
+# Deployable kernel component image: rootfs base + kernel artifacts only.
+# Diff(kernel-build, kernel-installed) = /boot/bzImage + /rootfs-modules.
+# Rebased onto rootfs → no build tooling, no source tree.
+FROM MERGE(kernel-installed)
+RESOLVE WITH rebase rootfs
+AS kernel-image
+
+# ── rootfs base ────────────────────────────────────────────────────────────────
+FROM ubuntu:24.04 AS rootfs
+RUN apt-get update && apt-get install -y \
+      ca-certificates tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM rootfs AS rootfs-apt
+RUN apt-get update
+
+# ── rootfs branches ────────────────────────────────────────────────────────────
+FROM rootfs-apt AS rootfs-net
+RUN apt-get install -y iproute2 iptables nftables
+
+FROM rootfs-apt AS rootfs-security
+RUN apt-get install -y openssh-server libpam-runtime
+
+FROM rootfs-apt AS rootfs-ota-build-env
+RUN apt-get install -y cmake make gcc g++ git \
+      libcurl4-openssl-dev libssl-dev libz-dev libjson-c-dev
+RUN git clone --depth 1 --branch 2024.05 \
+        https://github.com/sbabic/swupdate.git /src/swupdate
+WORKDIR /src/swupdate
+RUN make defconfig && make -j$(nproc)
+
+FROM rootfs-ota-build-env AS rootfs-ota
+RUN make -C /src/swupdate install
+
+# s6-overlay provides a lightweight process supervisor — no apt, no compilation.
+FROM rootfs AS rootfs-init
+COPY --from=ghcr.io/just-containers/s6-overlay:latest /init /init
+COPY --from=ghcr.io/just-containers/s6-overlay:latest /etc/s6-overlay /etc/s6-overlay
+
+# ── merge rootfs ───────────────────────────────────────────────────────────────
+ARG ROOTFS_COMPONENTS=rootfs-net, rootfs-security, rootfs-ota, rootfs-init
+FROM MERGE(${ROOTFS_COMPONENTS})
+RESOLVE WITH rebase rootfs
+RESOLVE WITH script ldconfig
+RESOLVE WITH script update-ca-certificates
+AS rootfs-assembled
+
+# ── final — rootfs + kernel ────────────────────────────────────────────────────
+# Both branches are already rebased onto rootfs, so this merge is conflict-free.
+# depmod -a runs once over the combined /lib/modules from kernel-image.
+FROM MERGE(rootfs-assembled, kernel-image)
+RESOLVE WITH rebase rootfs
+RESOLVE WITH script depmod -a
+AS final
+
+ENTRYPOINT ["/init"]

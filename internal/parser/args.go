@@ -22,10 +22,15 @@ func SubstituteArgs(src string, overrides map[string]string) string {
 		key, value, hasDefault := strings.Cut(rest, "=")
 		key = strings.TrimSpace(key)
 		if hasDefault {
-			args[key] = strings.Trim(strings.TrimSpace(value), `"`)
-		} else {
-			args[key] = "" // declared but no default
+			// Only set if not already overridden by a prior declaration with a value.
+			if _, seen := args[key]; !seen {
+				args[key] = strings.Trim(strings.TrimSpace(value), `"`)
+			}
+		} else if _, seen := args[key]; !seen {
+			args[key] = "" // declared but no default, and not yet seen
 		}
+		// Inner ARG re-declarations without a default (Dockerfile scoping pattern)
+		// do not overwrite the top-level default collected earlier.
 	}
 
 	// Overrides from --build-arg flags win over defaults.

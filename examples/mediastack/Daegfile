@@ -1,0 +1,138 @@
+# syntax=ghcr.io/dayjaby/daeg:latest
+#
+# Mediastack example — libx264 (apt), libx265 (source), SVT-AV1 (source),
+#                      libheif (cpack, links against all three), FFmpeg (source).
+#
+# Graph:
+#
+#   ubuntu:24.04 (base)
+#       ↓
+#   base-apt  (apt-get update)
+#   ├── x264                              (apt install)
+#   ├── x265-build-env → x265            (cmake + make install)
+#   └── svtav1-build-env → svtav1        (cmake + make install)
+#                    ↓
+#        MERGE(rebase→base) → medialibs
+#                    ↓
+#        medialibs-apt
+#        ├── libheif-build-env → libheif  (cmake + cpack -G DEB + dpkg -i,
+#        │                                 links against x265 + SVT-AV1)
+#        └── ffmpeg-build-env → ffmpeg-built  (compiled against all libs)
+#                    ↓
+#        MERGE(medialibs, libheif, ffmpeg-built) → (rebase→medialibs) → final
+#
+# Two applications of RESOLVE WITH rebase:
+#
+#  1. medialibs: each codec branch is diffed against its own direct parent, so
+#     compilers, source trees, apt lists and cmake caches never enter the merge.
+#     No COPY --from needed — the build environment is the parent stage.
+#
+#  2. final: build tooling from libheif and FFmpeg is stripped the same way.
+#     medialibs contributes its exact contents via an empty self-diff.
+#     Result: x264 + x265 + SVT-AV1 + libheif + FFmpeg, nothing else.
+
+# ── shared base ────────────────────────────────────────────────────────────────
+FROM ubuntu:24.04 AS base
+RUN apt-get update && apt-get install -y ca-certificates curl tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM base AS base-apt
+RUN apt-get update
+
+# ── x264 — from apt ────────────────────────────────────────────────────────────
+FROM base-apt AS x264
+RUN apt-get install -y libx264-dev
+
+# ── x265 — compiled from source ────────────────────────────────────────────────
+FROM base-apt AS x265-build-env
+RUN apt-get install -y cmake make gcc g++ git nasm
+RUN git clone --depth 1 --branch stable \
+        https://bitbucket.org/multicoreware/x265_git.git /src/x265
+WORKDIR /src/x265/build
+RUN cmake ../source \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX=/usr \
+      -DENABLE_SHARED=ON \
+    && make -j$(nproc)
+
+FROM x265-build-env AS x265
+RUN make -C /src/x265/build install
+
+# ── SVT-AV1 — compiled from source ────────────────────────────────────────────
+FROM base-apt AS svtav1-build-env
+RUN apt-get install -y cmake make gcc g++ git nasm
+RUN git clone --depth 1 --branch v3.1.2 \
+        https://gitlab.com/AOMediaCodec/SVT-AV1.git /src/svtav1
+WORKDIR /src/svtav1/Build
+RUN cmake .. \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX=/usr \
+      -DBUILD_SHARED_LIBS=ON \
+    && make -j$(nproc)
+
+FROM svtav1-build-env AS svtav1
+RUN make -C /src/svtav1/Build install
+
+# ── merge codec libraries ──────────────────────────────────────────────────────
+# All three branches diff against their direct parent — compilers, source trees
+# and apt lists are excluded automatically. No COPY --from needed.
+# Override CODECS to drop a library: --build-arg CODECS="x264, x265"
+ARG CODECS=x264, x265, svtav1
+FROM MERGE(${CODECS})
+RESOLVE WITH rebase base
+RESOLVE WITH script ldconfig
+AS medialibs
+
+# ── libheif — cmake + cpack + dpkg, links against x265 + SVT-AV1 ──────────────
+# Built on medialibs-apt so cmake finds libx265 and libSvtAv1Enc via pkg-config,
+# enabling HEVC and AVIF encoding. libheif has explicit CPack support in its
+# CMakeLists.txt, making cpack -G DEB produce a proper installable package.
+FROM medialibs AS medialibs-apt
+RUN apt-get update
+
+FROM medialibs-apt AS libheif-build-env
+RUN apt-get install -y cmake make gcc g++ git pkg-config \
+      libde265-dev libjpeg-dev
+RUN git clone --depth 1 --branch v1.21.2 \
+        https://github.com/strukturag/libheif.git /src/libheif
+WORKDIR /src/libheif/build
+RUN cmake .. \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX=/usr \
+      -DBUILD_SHARED_LIBS=ON \
+      -DWITH_X265=ON \
+      -DWITH_SvtEnc=ON \
+      -DCPACK_DEBIAN_PACKAGE_MAINTAINER="mediastack" \
+      -DCPACK_DEBIAN_PACKAGE_DEPENDS="libde265-0, libjpeg8" \
+    && make -j$(nproc) \
+    && cpack -G DEB
+
+FROM libheif-build-env AS libheif
+RUN dpkg --remove --force-depends libheif1 libheif-dev 2>/dev/null || true \
+    && dpkg -i /src/libheif/build/libheif*.deb
+
+# ── FFmpeg — compiled from source against all libs ─────────────────────────────
+FROM medialibs-apt AS ffmpeg-build-env
+RUN apt-get install -y \
+      gcc make pkg-config git nasm \
+      libass-dev libfreetype6-dev libvorbis-dev zlib1g-dev
+RUN git clone --depth 1 --branch n8.1 \
+        https://github.com/FFmpeg/FFmpeg.git /src/ffmpeg
+WORKDIR /src/ffmpeg
+RUN ./configure \
+      --prefix=/usr \
+      --enable-gpl \
+      --enable-shared \
+    && make -j$(nproc)
+
+FROM ffmpeg-build-env AS ffmpeg-built
+RUN make -C /src/ffmpeg install
+
+# ── final — all libs + FFmpeg, no build tooling ────────────────────────────────
+# medialibs, libheif, and ffmpeg-built are all based on medialibs-apt.
+# Each is diffed against its direct parent, so only installed artifacts remain.
+# medialibs self-diffs to empty and becomes the clean root via rebase.
+FROM MERGE(medialibs, libheif, ffmpeg-built)
+RESOLVE WITH rebase medialibs
+RESOLVE WITH script ldconfig
+AS final

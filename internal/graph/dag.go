@@ -65,6 +65,18 @@ func Validate(daeg *parser.Daegfile) (*ValidationResult, error) {
 		return nil, errs
 	}
 
+	// Check rebase targets resolve to a known stage.
+	for _, stage := range daeg.Stages {
+		if stage.RebaseResolver != nil {
+			target := stage.RebaseResolver.Stage
+			if _, defined := index[target]; !defined {
+				errs.Errors = append(errs.Errors,
+					fmt.Sprintf("line %d: stage %q: RESOLVE WITH rebase references unknown stage %q",
+						stage.RebaseResolver.Line, stage.Name, target))
+			}
+		}
+	}
+
 	// Check parent references and self-references.
 	for _, stage := range daeg.Stages {
 		for _, parent := range stage.Parents {

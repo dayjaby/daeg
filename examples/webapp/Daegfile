@@ -1,0 +1,64 @@
+# syntax=ghcr.io/dayjaby/daeg:latest
+#
+# Webapp example — polyglot Python + Node web service.
+#
+# Graph:
+#
+#   ubuntu:24.04 (base)
+#   ├── node-builder  (npm ci + npm build — classic multi-stage)
+#   ├── python-app    (uv install → runtime artifacts only)
+#   └── node-app      (COPY dist from node-builder → runtime artifacts only)
+#                ↓
+#         MERGE → final
+#
+# The two application branches are independent: Python installs to
+# /app/.venv and Node ships a static dist to /app/ui/dist. No conflicts,
+# no shared paths — the merge is a clean overlay with no RESOLVE needed.
+#
+# The builder pattern keeps build tooling (Node, npm, compilers) out of the
+# final image. Only runtime artifacts cross the merge boundary.
+
+# ── shared base ────────────────────────────────────────────────────────────────
+FROM ubuntu:24.04 AS base
+RUN apt-get update && apt-get install -y ca-certificates curl tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── node-builder ───────────────────────────────────────────────────────────────
+# Full Node toolchain available here. Nothing from this stage enters the final
+# image directly — only the compiled dist is copied into node-app below.
+FROM base AS node-builder
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
+COPY ui/package.json ui/package-lock.json /app/ui/
+WORKDIR /app/ui
+RUN npm ci
+COPY ui/ /app/ui/
+RUN npm run build
+
+# ── application branches ───────────────────────────────────────────────────────
+# Both branches are based on `base` — no apt lists, no build tooling.
+# They install into non-overlapping paths so no RESOLVE is needed at the merge.
+
+FROM base AS python-app
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/
+WORKDIR /app
+COPY pyproject.toml uv.lock ./
+COPY src/ src/
+RUN uv sync --frozen --no-cache
+
+FROM base AS node-app
+COPY --from=node-builder /app/ui/dist /app/ui/dist
+
+# ── final merge ────────────────────────────────────────────────────────────────
+# python-app → /app/.venv, /app/src
+# node-app   → /app/ui/dist
+# No overlapping paths — no RESOLVE directives needed.
+FROM MERGE(python-app, node-app)
+AS final
+
+WORKDIR /app
+COPY server.py .
+
+EXPOSE 8000
+CMD ["uv", "run", "uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]

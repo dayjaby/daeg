@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/moby/buildkit/client/llb"
-	"github.com/moby/buildkit/frontend/gateway/client"
 	"github.com/moby/buildkit/frontend/dockerui"
+	"github.com/moby/buildkit/frontend/gateway/client"
 	ocispecs "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/dayjaby/daeg/internal/graph"
@@ -23,8 +23,7 @@ const (
 
 // Build is the BuildKit frontend entrypoint.
 func Build(ctx context.Context, c client.Client) (*client.Result, error) {
-	// 1. Wrap the gateway client in dockerui.Client — this gives us
-	//    ReadEntrypoint, NamedContext, and Dockerfile2LLB integration.
+	// 1. Wrap the gateway client in dockerui.Client for Dockerfile2LLB delegation.
 	uiClient, err := dockerui.NewClient(c)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create dockerui client: %w", err)
@@ -65,7 +64,7 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 	)
 
 	// 8. Compile AST → LLB, delegating instruction execution to Dockerfile2LLB.
-	solver := NewSolver(daeg, uiClient)
+	solver := NewSolver(daeg, uiClient, c)
 	solver.SetBuildContext(buildContext)
 
 	finalState, imgConfig, err := solver.Solve(ctx, targetName)

@@ -56,6 +56,19 @@ type DiscardResolver struct {
 	Line  int
 }
 
+// RebaseResolver changes the base of the merged snapshot.
+// By default a MERGE uses the common base of its parents as the root layer.
+// RESOLVE WITH rebase <stage> substitutes a different (typically earlier)
+// stage as the root, while diffs are still computed against the original
+// common base. This lets large transient layers (e.g. apt lists from an
+// apt-updated stage) be excluded from the final image without whiteouts.
+//
+//	RESOLVE WITH rebase base
+type RebaseResolver struct {
+	Stage string // name of the stage to use as the new merge root
+	Line  int
+}
+
 // Stage represents one named build stage.
 //
 // Simple stage:  FROM ubuntu:24.04 AS base
@@ -71,9 +84,10 @@ type Stage struct {
 	Name    string
 	Parents []string // len==1 for simple stages, len>=2 for merge stages
 
-	ResolveRules    []ResolveRule
-	ScriptResolvers []ScriptResolver
+	ResolveRules     []ResolveRule
+	ScriptResolvers  []ScriptResolver
 	DiscardResolvers []DiscardResolver
+	RebaseResolver   *RebaseResolver // nil if not specified; at most one allowed
 
 	// RawLines holds instruction lines verbatim for BuildKit's own parser.
 	RawLines []string

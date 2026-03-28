@@ -190,6 +190,62 @@ RUN echo "done"
 	}
 }
 
+func TestRebaseResolver(t *testing.T) {
+	src := `
+FROM ubuntu:24.04 AS base
+
+FROM base AS base-apt
+RUN apt-get update
+
+FROM base-apt AS a
+RUN apt-get install -y pkg-a
+
+FROM base-apt AS b
+RUN apt-get install -y pkg-b
+
+FROM MERGE(a, b)
+RESOLVE WITH rebase base
+RESOLVE WITH script ldconfig
+AS merged
+`
+	daeg, err := Parse(src)
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+	merged := daeg.FindStage("merged")
+	if merged == nil {
+		t.Fatal("stage merged not found")
+	}
+	if merged.RebaseResolver == nil {
+		t.Fatal("expected a rebase resolver, got nil")
+	}
+	if merged.RebaseResolver.Stage != "base" {
+		t.Errorf("expected rebase target %q, got %q", "base", merged.RebaseResolver.Stage)
+	}
+	if len(merged.ScriptResolvers) != 1 {
+		t.Errorf("expected 1 script resolver, got %d", len(merged.ScriptResolvers))
+	}
+}
+
+func TestRebaseDuplicateIsError(t *testing.T) {
+	src := `
+FROM ubuntu:24.04 AS base
+FROM base AS a
+RUN echo a
+FROM base AS b
+RUN echo b
+
+FROM MERGE(a, b)
+RESOLVE WITH rebase base
+RESOLVE WITH rebase base
+AS merged
+`
+	_, err := Parse(src)
+	if err == nil {
+		t.Error("expected error for duplicate RESOLVE WITH rebase")
+	}
+}
+
 func TestResolveAfterAsIsError(t *testing.T) {
 	src := `
 FROM ubuntu:24.04 AS a

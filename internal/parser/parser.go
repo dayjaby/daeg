@@ -79,6 +79,16 @@ func Parse(src string) (*Daegfile, error) {
 		case stateMergeHeader:
 			switch {
 
+			case strings.HasPrefix(upper, "RESOLVE WITH REBASE "):
+				stageName := strings.TrimSpace(line[len("RESOLVE WITH rebase "):])
+				if stageName == "" {
+					return nil, &ParseError{n, "RESOLVE WITH rebase requires a stage name"}
+				}
+				if current.RebaseResolver != nil {
+					return nil, &ParseError{n, "only one RESOLVE WITH rebase is allowed per merge stage"}
+				}
+				current.RebaseResolver = &RebaseResolver{Stage: stageName, Line: n}
+
 			case strings.HasPrefix(upper, "RESOLVE WITH SCRIPT "):
 				// Everything after "RESOLVE WITH script " is the command — no quotes needed
 				// because there is nothing after the command on this line.
@@ -204,8 +214,8 @@ func parseMergeList(s string, n int) ([]string, error) {
 		}
 		parents = append(parents, name)
 	}
-	if len(parents) < 2 {
-		return nil, &ParseError{n, "MERGE requires at least 2 parent stages"}
+	if len(parents) < 1 {
+		return nil, &ParseError{n, "MERGE requires at least 1 parent stage"}
 	}
 	return parents, nil
 }
