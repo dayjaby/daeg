@@ -67,7 +67,10 @@ RUN pip3 install --no-cache-dir torch numpy fastapi uvicorn
 FROM system-deps AS node-app
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
 RUN apt-get install -y nodejs
-RUN npm install --prefix /app/ui react react-dom vite
+COPY ui/package.json /app/ui/package.json
+RUN npm install --prefix /app/ui
+COPY ui/ /app/ui/
+RUN npx --prefix /app/ui vite build
 
 # ── final merge ─────────────────────────────────────────────────────────────────
 # No RESOLVE lines — we assert that python-app and node-app do not conflict.
@@ -77,7 +80,7 @@ AS final
 
 WORKDIR /app
 COPY server.py .
-COPY --from=node-app /app/ui /app/ui
+COPY --from=node-app /app/ui/dist /app/ui
 
 EXPOSE 8000
 CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
