@@ -3,7 +3,7 @@ package graph
 import (
 	"testing"
 
-	"github.com/yourname/daeg/internal/parser"
+	"github.com/dayjaby/daeg/internal/parser"
 )
 
 // mustParse is a test helper that parses a Daegfile and fails the test if

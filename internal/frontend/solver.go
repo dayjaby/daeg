@@ -10,7 +10,7 @@ import (
 	"github.com/moby/buildkit/frontend/dockerui"
 	dockerspec "github.com/moby/docker-image-spec/specs-go/v1"
 
-	"github.com/yourname/daeg/internal/parser"
+	"github.com/dayjaby/daeg/internal/parser"
 )
 
 // Solver translates a validated Daegfile AST into a tree of llb.State values.

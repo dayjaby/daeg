@@ -11,8 +11,8 @@ import (
 	"github.com/moby/buildkit/frontend/dockerui"
 	ocispecs "github.com/opencontainers/image-spec/specs-go/v1"
 
-	"github.com/yourname/daeg/internal/graph"
-	"github.com/yourname/daeg/internal/parser"
+	"github.com/dayjaby/daeg/internal/graph"
+	"github.com/dayjaby/daeg/internal/parser"
 )
 
 const (

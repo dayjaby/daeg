@@ -8,7 +8,7 @@ import (
 	"github.com/moby/buildkit/frontend/gateway/client"
 	"github.com/moby/buildkit/frontend/gateway/grpcclient"
 
-	"github.com/yourname/daeg/internal/frontend"
+	"github.com/dayjaby/daeg/internal/frontend"
 )
 
 func main() {

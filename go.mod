@@ -1,4 +1,4 @@
-module github.com/yourname/daeg
+module github.com/dayjaby/daeg
 
 go 1.22.2
 

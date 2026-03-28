@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/yourname/daeg/internal/parser"
+	"github.com/dayjaby/daeg/internal/parser"
 )
 
 // ValidationError collects all errors found during validation.

@@ -1,4 +1,4 @@
-# syntax=ghcr.io/yourname/daeg:latest
+# syntax=ghcr.io/dayjaby/daeg:latest
 #
 # Canonical Daegfile example — polyglot data science image.
 #

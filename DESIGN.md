@@ -35,7 +35,7 @@ Daeg makes the DAG explicit and user-controlled.
 Daeg is implemented as a **BuildKit custom frontend**. When the first line of a Daegfile contains:
 
 ```
-# syntax=ghcr.io/yourname/daeg:latest
+# syntax=ghcr.io/dayjaby/daeg:latest
 ```
 
 BuildKit pulls that image and runs it as a gRPC server. The frontend receives the raw file bytes and returns LLB (a protobuf-encoded DAG of build operations). BuildKit then executes those operations and produces an OCI image.

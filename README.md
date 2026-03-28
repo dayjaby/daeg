@@ -39,10 +39,10 @@ Independent branches build in parallel. The merge is content-addressed — ident
 
 ```bash
 # Build and push the frontend image
-docker buildx build -t ghcr.io/yourname/daeg:latest --push .
+docker buildx build -t ghcr.io/dayjaby/daeg:latest --push .
 
 # Use it — add the syntax line to your Daegfile
-echo '# syntax=ghcr.io/yourname/daeg:latest' | cat - Daegfile | \
+echo '# syntax=ghcr.io/dayjaby/daeg:latest' | cat - Daegfile | \
   docker buildx build -f - .
 
 # Target a specific stage
