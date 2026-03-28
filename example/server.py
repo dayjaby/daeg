@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(title="daeg-example")
 
-UI_DIR = Path("/app/ui")
+UI_DIR = Path("/app/ui/dist")
 
 
 @app.get("/healthz")
